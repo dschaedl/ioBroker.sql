@@ -11,7 +11,7 @@ var commons  = require(__dirname + '/lib/aggregate');
 var SQLFuncs = null;
 var fs       = require('fs');
 var store    = require('node-persist');
-var batch = require('batchflow');
+var batch    = require('batchflow');
 
 
 
@@ -37,7 +37,7 @@ var dbNames = [
 var sqlDPs  = {};
 var from    = {};
 var subscribeAll = false;
-var dbPingable = false;
+var dbAvailable = false;
 var repeater;
 var runningprocess = false;
 
@@ -389,28 +389,6 @@ function finish(callback) {
 }
 
 function processMessage(msg) {
-    //var client = new SQL.MySQLClient(params);
-    var params = {
-        server: adapter.config.host + (adapter.config.port ? ':' + adapter.config.port : ''),
-        host: adapter.config.host + (adapter.config.port ? ':' + adapter.config.port : ''),
-        database: 'iobroker',
-        user: adapter.config.user,
-        password: adapter.config.password,
-        max_idle: (adapter.config.dbtype === 'sqlite') ? 1 : 2
-    };
-    var session = ping.createSession();
-    session.pingHost(params.host, function(error, target){
-        if (error) {
-            adapter.log.debug("ping to host throws an error: " + error.toString());
-            dbPingable = false;
-        } else {
-            adapter.log.debug("ping to host successful");
-            dbPingable = true;
-        }
-        session.close();
-    });
-
-
         if (msg.command == 'getHistory') {
             getHistory(msg);
         } else if (msg.command == 'test') {
@@ -503,9 +481,15 @@ function main() {
     store.initSync({continuous: false, interval: 1000*60*10, ttl: 1000*60*60*24*10});
 
     setInterval(function() {adapter.log.debug("setinterval for dumpToDB to 120s"); dumpCacheToDB();}, 1000*120);
+
+    setInterval(function() {adapter.log.debug("setinterval for checkCacheRetention to 600s"); checkCacheRetention();}, 1000*600);
+
 }
 
 function pushHistory(id, state) {
+    while (state.ts < 1000000000000) {
+        state.ts = parseInt(state.ts, 10) * 1000 + (parseInt(state.ms, 10) || 0);
+    }
     // Push into redis
     if (sqlDPs[id]) {
         var settings = sqlDPs[id][adapter.namespace];
@@ -607,12 +591,12 @@ function dumpCacheToDB() {
     session.pingHost(params.host, function(error, target){
         if (error) {
             adapter.log.debug("ping to host throws an error: " + error.toString());
-            dbPingable = false;
+            dbAvailable = false;
             //adapter.log.debug("re-scheduling dumpToDB in 120s");
             //repeater = setTimeout(function () {adapter.log.debug("re-run dumpToDB in 120s"); dumpCacheToDB();}, 1000*120);
         }
-        else if (!runningprocess) {
-            dbPingable = true;
+        else if (runningprocess == false) {
+            dbAvailable = true;
             runningprocess = true;
             var client = mySql.createConnection(params);
 
@@ -691,7 +675,7 @@ function dumpCacheToDB() {
 }
 
 function insertObjectIntoDB(id, client, next) {
-    adapter.log.debug("DB seems to be available - let's clean up the cache for " + id);
+    adapter.log.debug("DB seems to be available - let's move the cache for " + id);
 
     adapter.log.debug("insertObjectIntoDB try - ConnectionID: " + client.threadId);
     var entries = store.getItemSync(id);
@@ -707,13 +691,13 @@ function insertObjectIntoDB(id, client, next) {
      }*/
 
     batch(entries).sequential().each(function(i, item, next) {
-        adapter.log.debug("writing state into DB: " + JSON.stringify(item));
+//        adapter.log.debug("writing state into DB: " + JSON.stringify(item));
         insertStateIntoDB(id, item, client, next);
     }).error(function(err){
         adapter.log.error("error iterating entry: " + err.stack);
     }).end(function() {
         adapter.log.debug("iterating ended2: ");
-        store.removeItemSync(id);
+        //store.removeItemSync(id);
         next();
     });
 
@@ -724,10 +708,10 @@ function insertObjectIntoDB(id, client, next) {
 }
 
 function insertStateIntoDB(id, state, client, next) {
-    adapter.log.debug("insertStateIntoDB - connectionID: " + client.threadId );
+    //adapter.log.debug("insertStateIntoDB - connectionID: " + client.threadId );
     var type = types[typeof state.val];
     if (type === undefined) {
-        adapter.log.warn('Cannot store values of type "' + typeof state.val + '"');
+        adapter.log.warn('Cannot store values of type "' + typeof state.val + '" - value: ' + JSON.stringify(state.val));
         next();
         return;
     }
@@ -756,38 +740,33 @@ function insertStateIntoDB(id, state, client, next) {
     }
 
     // todo change it after ms are added
-    state.ts = parseInt(state.ts, 10) * 1000 + (parseInt(state.ms, 10) || 0);
+    //adapter.log.debug("state.ts for query before: " + state.ts);
+    while (state.ts < 1000000000000) {
+        state.ts = parseInt(state.ts, 10) * 1000 + (parseInt(state.ms, 10) || 0);
+    }
 
+    var tDate = new Date(state.ts);
+    //adapter.log.debug("state.ts for query: " + state.ts);
+    //adapter.log.debug("state.ts for query as Date: " + tDate);
+    if (!state.stored && state.ts > 1000000000000 && state.ts < 9000000000000) {
     var query = SQLFuncs.insert(sqlDPs[id].index, state, from[state.from] || 0, dbNames[type]);
-    adapter.log.debug("now query: " + query);
-    client.query(query, function (err, rows, fields) {
-        if (err) {
-            adapter.log.error('Cannot insert ' + query + ': ' + err);
-        }
-        adapter.log.debug("query executed: " + client.threadId + " - " + query);
-        next();
-    });
-    adapter.log.debug("after query: " + query);
-}
+//    adapter.log.debug("now query: " + query);
 
-function checkRetention(id, client) {
-    if (sqlDPs[id][adapter.namespace].retention) {
-        var d = new Date();
-        var dt = d.getTime();
-        // check every 6 hours
-        if (!sqlDPs[id].lastCheck || dt - sqlDPs[id].lastCheck >= 21600000/* 6 hours */) {
-            sqlDPs[id].lastCheck = dt;
-            var query = SQLFuncs.retention(sqlDPs[id].index, dbNames[sqlDPs[id].type], sqlDPs[id][adapter.namespace].retention);
-            client.query(query, function (err, rows, fields) {
-                if (err) {
-                    adapter.log.error('Cannot delete ' + query + ': ' + err);
-                }
-            });
+        client.query(query, function (err, rows, fields) {
+            if (err) {
+                adapter.log.error('Cannot insert ' + query + ': ' + err);
+            }
+            adapter.log.debug("query executed: " + client.threadId + " - " + query);
+            state.stored = true;
+            next();
+        });
+    } else {
+        if (state.stored) {
+//            adapter.log.debug("state is already stored - do nothing");
         }
+        next();
     }
 }
-
-
 
 function getId(id, type, client, cb) {
     var query = SQLFuncs.getIdSelect(id);
@@ -883,10 +862,51 @@ function getFrom(_from, client, cb) {
     });
 }
 
-function sortByTs(a, b) {
-    var aTs = a.ts;
-    var bTs = b.ts;
-    return ((aTs < bTs) ? -1 : ((aTs > bTs) ? 1 : 0));
+function checkCacheRetention() {
+    var params = {
+        host:       adapter.config.host + (adapter.config.port ? ':' + adapter.config.port : ''),
+    };
+    //check ping
+    adapter.log.debug("checkCacheRetention: starting up");
+    var session = ping.createSession();
+
+    if (!runningprocess) {
+        runningprocess = true;
+        var ids = store.keys();
+        adapter.log.debug("checkCacheRetention got all IDs: " + ids.length);
+
+        // calculate last valid Date
+        var retentionTime = new Date();
+        // subtract 10d
+        retentionTime.setDate(retentionTime.getDate() - 10);
+
+
+        batch(ids).sequential().each(function (i, id, next) {
+            adapter.log.debug("checkCacheRetention iterating ID: " + id);
+
+            var entries = store.getItemSync(id);
+            var newEntries = [];
+            for (var e in entries) {
+                if (!entries[e].stored || (entries[e].ts > retentionTime)) {
+                    //copy array
+                    newEntries.push(entries[e]);
+                    //adapter.log.debug("checkCacheRetention entry copied: " + JSON.stringify(entries[e]));
+                } else {
+                    adapter.log.debug("checkCacheRetention Entry removed from Cache: " + JSON.stringify(entries[e]));
+                }
+            }
+            store.setItem(id, newEntries);
+            next();
+        }).error(function (err) {
+            adapter.log.error("checkCacheRetention error iterating ids: " + err.stack);
+            runningprocess = false;
+        }).end(function () {
+            adapter.log.debug("checkCacheRetention iterating ended");
+            runningprocess = false;
+            store.persistSync();
+        });
+        //adapter.log.debug("checkCacheRetention ended successfully: ");
+    }
 }
 
 function getDataFromDB(db, options, client, callback) {
@@ -895,21 +915,28 @@ function getDataFromDB(db, options, client, callback) {
     if (options.step)  options.step  *= 1000;
 
     var query = SQLFuncs.getHistory(db, options);
-    adapter.log.debug(query);
+    adapter.log.debug("getDataFromDB: " + query);
 
     client.query(query, function (err, rows, fields) {
         if (rows && rows.rows) rows = rows.rows;
         // because descending
+/*
         if (!err && rows && !options.start && options.count) {
             rows.sort(sortByTs);
         }
-
+*/
         if (rows) {
             for (var c = 0; c < rows.length; c++) {
                 // todo change it after ms are added
-                if (options.ms) rows[c].ms = rows[c].ts % 1000;
-                if (adapter.common.loglevel == 'debug') rows[c].date = new Date(parseInt(rows[c].ts, 10));
-                rows[c].ts = Math.round(rows[c].ts / 1000);
+                if (options.ms) {
+                    rows[c].ms = rows[c].ts % 1000;
+                }
+                if (adapter.common.loglevel == 'debug') {
+                    rows[c].date = new Date(parseInt(rows[c].ts, 10));
+                }
+                while (rows[c].ts > 9000000000) {
+                    rows[c].ts = Math.round(rows[c].ts / 1000);
+                }
 
                 if (options.ack) rows[c].ack = !!rows[c].ack;
                 if (adapter.config.round) rows[c].val = Math.round(rows[c].val * adapter.config.round) / adapter.config.round;
@@ -930,10 +957,15 @@ function getCachedData(options, callback) {
     var res = [];
     var cache = [];
 
-    res = store.getItemSync(options.id);
+    if (options.start) options.start *= 1000;
+    if (options.end)   options.end   *= 1000;
+    if (options.step)  options.step  *= 1000;
+
+    var states = store.getItemSync(options.id);
     cache = [];
     // todo can be optimized
-    if (res) {
+    if (states) {
+        res = JSON.parse(JSON.stringify(states));
         var iProblemCount = 0;
         for (var i = res.length - 1; i >= 0 ; i--) {
             if (!res[i]) {
@@ -946,6 +978,11 @@ function getCachedData(options, callback) {
                 continue;
             }
             if (options.ack) res[i].ack = !!res[i];
+
+            while (res[i].ts > 9000000000) {
+                res[i].ts = Math.round(res[i].ts / 1000);
+            }
+
             cache.unshift(res[i]);
 
             if (!options.start && cache.length >= options.count) {
@@ -964,11 +1001,16 @@ function getCachedData(options, callback) {
     }
 
     options.length = cache.length;
+    if (options.start) options.start /= 1000;
+    if (options.end)   options.end   /= 1000;
+    if (options.step)  options.step  /= 1000;
+
     callback(cache, !options.start && cache.length >= options.count);
 }
 
 function getHistory(msg) {
     var startTime = new Date().getTime();
+    adapter.log.debug("timetrace start: " + (new Date().getTime() - startTime) + 'ms');
     var options = {
         id:         msg.message.id == '*' ? null : msg.message.id,
         start:      msg.message.options.start,
@@ -997,8 +1039,9 @@ function getHistory(msg) {
         commons.sendResponse(adapter, msg, options, [], startTime);
         return;
     }
-    if (!dbPingable) {
+    if (!dbAvailable) {
         adapter.log.warn("DB is not available - returning the cache");
+        adapter.log.debug("timetrace start getting from cache: " + (new Date().getTime() - startTime) + 'ms');
 
         if (options.start > options.end) {
             var _end      = options.end;
@@ -1008,14 +1051,17 @@ function getHistory(msg) {
 
         getCachedData(options, function (cacheData, isFull) {
             // if all data read
-            cacheData = cacheData.sort(sortByTs);
+            adapter.log.debug("timetrace got all data: " + (new Date().getTime() - startTime) + 'ms');
+            //cacheData = cacheData.sort(sortByTs);
+            adapter.log.debug("timetrace data sorted: " + (new Date().getTime() - startTime) + 'ms');
             adapter.log.debug('Send: ' + cacheData.length + ' values in: ' + (new Date().getTime() - startTime) + 'ms');
             commons.sendResponse(adapter, msg, options, cacheData, startTime);
+            adapter.log.debug("timetrace response sent: " + (new Date().getTime() - startTime) + 'ms - for ' + cacheData.length + ' entries');
         });
 
         // else: DB is available
     } else {
-
+        adapter.log.debug("timetrace start getting from DB: " + (new Date().getTime() - startTime) + 'ms');
         var client = mySql.createConnection(params);
         client.connect();
         adapter.log.debug("getHistory client connected " + client.threadId);
@@ -1030,6 +1076,7 @@ function getHistory(msg) {
             options.start = Math.round((new Date()).getTime() / 1000) - 5030; // - 1 year
         }
 
+        adapter.log.debug("timetrace getID: " + (new Date().getTime() - startTime) + 'ms');
         if (options.id && sqlDPs[options.id].index === undefined) {
             // read or create in DB
 
@@ -1040,6 +1087,7 @@ function getHistory(msg) {
                 } else {
                     getHistory(msg, client);
                 }
+                adapter.log.debug("timetrace got the ID: " + (new Date().getTime() - startTime) + 'ms');
             });
         }
 
@@ -1053,7 +1101,9 @@ function getHistory(msg) {
         // if specific id requested
         if (options.id || options.id === 0) {
             getDataFromDB(dbNames[type], options, client, function (err, data) {
+                //adapter.log.debug("data: " + JSON.stringify(data));
                 commons.sendResponse(adapter, msg, options, (err ? err.toString() : null) || data, startTime);
+                adapter.log.debug("timetrace response sent1: " + (new Date().getTime() - startTime) + 'ms - for ' + data.length + ' entries');
             });
         } else {
             // if all IDs requested
@@ -1064,8 +1114,9 @@ function getHistory(msg) {
                 getDataFromDB(dbNames[db], options, client, function (err, data) {
                     if (data) rows = rows.concat(data);
                     if (!--count) {
-                        rows.sort(sortByTs);
+                        //rows.sort(sortByTs);
                         commons.sendResponse(adapter, msg, options, rows, startTime);
+                        adapter.log.debug("timetrace response sent2: " + (new Date().getTime() - startTime) + 'ms - for ' + rows.length + ' entries');
                     }
                 });
             }
