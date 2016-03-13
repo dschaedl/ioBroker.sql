@@ -33,7 +33,8 @@
       "sql-client": "0.7.0",
       "node-persist": "^0.0.8",
       "dateformat": "^1.0.12",
-      "batchflow": "^0.4.0"
+      "batchflow": "^0.4.0",
+      "net-ping": "^1.2.0"
   },
   "devDependencies": {
       "grunt": "^0.4.5",

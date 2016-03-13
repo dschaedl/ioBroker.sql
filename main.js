@@ -478,7 +478,7 @@ function main() {
     }
 
     store.initSync({continuous: false, interval: 1000*60*10, ttl: 1000*60*60*24*10});
-    setInterval(function() {adapter.log.info("setinterval for dumpToDB to " + settings.dbpush + "min"); dumpCacheToDB();}, 1000*60*settings.dbpush);
+    setInterval(function() {adapter.log.info("setinterval for dumpToDB to " + adapter.config.dbpush + "min"); dumpCacheToDB();}, 1000*60*adapter.config.dbpush);
     setInterval(function() {adapter.log.info("setinterval for checkCacheRetention to 600s"); checkCacheRetention();}, 1000*600);
 }
 
@@ -771,7 +771,7 @@ function checkCacheRetention() {
 
         // calculate last valid Date
         var retentionTime = new Date();
-        retentionTime.setDate(retentionTime.getDate() - settings.cacheretention);
+        retentionTime.setDate(retentionTime.getDate() - adapter.config.cacheretention);
 
         batch(ids).sequential().each(function (i, id, next) {
             adapter.log.debug("checkCacheRetention iterating ID: " + id);
