@@ -36,6 +36,8 @@
         "connLink":  "",
         "debounce":  10000,
         "retention": 31536000,
+        "dbpush": 5,
+        "cacheretention": 10,
         "host":      "localhost",
         "port":      0,
         "user":      "",
