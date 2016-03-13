@@ -253,7 +253,7 @@ function testConnection(msg) {
                 return adapter.sendTo(msg.from, msg.command, {error: err.toString()}, msg.callback);
             }
             client.execute("SELECT 2 + 3 AS x", function (err, rows, fields) {
-                client.end();
+                client.disconnect();
                 if (timeout) {
                     clearTimeout(timeout);
                     timeout = null;
@@ -330,6 +330,9 @@ function oneScript(script, cb) {
                         // do nothing
                         err = null;
                     }  else
+                    if (err.errno ==  1061) { //ER_DUP_KEYNAME: Duplicate key name -> Index already exists
+                        err = null;
+                    } else
                     if (err.code == '42P04') {// if database exists or table exists
                         // do nothing
                         err = null;
@@ -572,7 +575,7 @@ function dumpCacheToDB() {
                     runningprocess = false;
                     return;
                 }
-                adapter.log.debug("client connected to DB: " + client.threadId);
+                adapter.log.debug("client connected to DB: ");
 
                 var counter = 0;
                 batch(ids).sequential().each(function(i, id, next) {
@@ -588,7 +591,7 @@ function dumpCacheToDB() {
                     clientPool.return(client);
                     session.close();
                     runningprocess = false;
-                    adapter.log.infos("dumping ende successfully");
+                    adapter.log.info("dumping ended successfully");
                 });
             });
         } else {
@@ -653,7 +656,7 @@ function insertStateIntoDB(id, state, client, next) {
             if (err) {
                 adapter.log.error('Cannot insert ' + query + ': ' + err);
             }
-            adapter.log.debug("query executed: " + client.threadId + " - " + query);
+            adapter.log.debug("query executed: " + query);
             state.stored = true;
             next();
         });
@@ -666,7 +669,7 @@ function insertStateIntoDB(id, state, client, next) {
 function getId(id, type, client, cb) {
     var query = SQLFuncs.getIdSelect(id);
     client.execute(query, function (err, rows, fields) {
-        adapter.log.debug("query executed: " + client.threadId + " - " + query);
+        adapter.log.debug("query executed: " + query);
         if (rows && rows.rows) rows = rows.rows;
         if (err) {
             adapter.log.error('Cannot select1 ' + query + ': ' + err);
@@ -683,7 +686,7 @@ function getId(id, type, client, cb) {
                         if (cb) cb(err);
                         return;
                     }
-                    adapter.log.debug("query executed: " + client.threadId + " - " + query);
+                    adapter.log.debug("query executed: " + query);
                     query = SQLFuncs.getIdSelect(id);
                     client.execute(query, function (err, rows, fields) {
                         if (rows && rows.rows) rows = rows.rows;
@@ -692,7 +695,7 @@ function getId(id, type, client, cb) {
                             if (cb) cb(err);
                             return;
                         }
-                        adapter.log.debug("query executed: " + client.threadId + " - " + query);
+                        adapter.log.debug("query executed: " + query);
                         sqlDPs[id].index = rows[0].id;
                         sqlDPs[id].type  = rows[0].type;
 
@@ -716,7 +719,7 @@ function getFrom(_from, client, cb) {
     var query = SQLFuncs.getFromSelect(_from);
 
     client.execute(query, function (err, rows, fields) {
-        adapter.log.debug("query executed: " + client.threadId + " - " + query);
+        adapter.log.debug("query executed: " + query);
         if (rows && rows.rows) rows = rows.rows;
         if (err) {
             adapter.log.error('Cannot select3 ' + query + ': ' + err);
@@ -732,7 +735,7 @@ function getFrom(_from, client, cb) {
                     if (cb) cb(err);
                     return;
                 }
-                adapter.log.debug("query executed: " + client.threadId + " - " + query);
+                adapter.log.debug("query executed: " + query);
 
                 query = SQLFuncs.getFromSelect(_from);
                 client.execute(query, function (err, rows, fields) {
@@ -742,7 +745,7 @@ function getFrom(_from, client, cb) {
                         if (cb) cb(err);
                         return;
                     }
-                    adapter.log.debug("query executed: " + client.threadId + " - " + query);
+                    adapter.log.debug("query executed: " + query);
                     from[_from] = rows[0].id;
 
                     if (cb) cb();
@@ -923,7 +926,7 @@ function getHistory(msg) {
                 adapter.log.error(err);
                 return;
             }
-            adapter.log.debug("getHistory client connected " + client.threadId);
+            adapter.log.debug("getHistory client connected ");
 
             if (options.start > options.end) {
                 var _end = options.end;
