@@ -486,6 +486,7 @@ function main() {
 }
 
 function pushHistory(id, state) {
+    adapter.log.debug("pushHistory - id: " + id + " -> " + state.val);
     if (sqlDPs[id]) {
         var settings = sqlDPs[id][adapter.namespace];
 
@@ -505,7 +506,10 @@ function pushHistory(id, state) {
 }
 
 function pushHelper(_id) {
-    if (!sqlDPs[_id] || !sqlDPs[_id].state || !sqlDPs[_id].state.val) return;
+    if (!sqlDPs[_id] || !sqlDPs[_id].state) {
+        adapter.log.debug("*NOT* pushHelper - id: " + _id + " - val: " + sqlDPs[_id].state.val + " - state: " + sqlDPs[_id].state);
+        return;
+    }
     var _settings = sqlDPs[_id][adapter.namespace];
     // if it was not deleted in this time
     if (_settings) {
